@@ -1,0 +1,21 @@
+# Переменные окружения
+.env
+
+# Виртуальное окружение
+venv/
+.venv/
+env/
+
+# Сессии Telethon
+sessions/
+
+# Python кэш
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDE
+.vscode/
+**/.vscode/

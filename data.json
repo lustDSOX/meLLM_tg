@@ -1,0 +1,32 @@
+{
+  "bot_enabled": false,
+  "accounts": {
+    "1366877650": {
+      "id": "1366877650",
+      "username": "lust_SOX",
+      "users": {
+        "740983081": {
+          "id": 740983081,
+          "username": "whimsicalhalcyon",
+          "name": "анастасия",
+          "description": "",
+          "active": false,
+          "role": "4be8a84c",
+          "context": "10"
+        },
+        "6829883858": {
+          "id": 6829883858,
+          "username": null,
+          "name": "людмила",
+          "description": "",
+          "active": true,
+          "role": "577bd302",
+          "context": "0"
+        }
+      },
+      "session_file": "sessions/1366877650.session",
+      "enabled": false
+    }
+  },
+  "roles": []
+}
