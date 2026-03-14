@@ -1,4 +1,3 @@
-import asyncio
 import os
 import logging
 import uuid
@@ -22,7 +21,8 @@ from config import (
     get_accounts, get_account,
     create_account, delete_account
 )
-from keyboards import accounts_menu, account_detail
+from keyboards import accounts_menu, account_detail, confirm_menu
+from modules.telethon_manager import disconnect_account
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -265,3 +265,52 @@ async def account_add_cancel(message: Message, state: FSMContext):
         "❌ Авторизация отменена. Сессия удалена.",
         reply_markup=accounts_menu(accounts)
     )
+
+
+# ── Удаление аккаунта ────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("acc:delete:") & ~F.data.contains(":yes:"))
+async def account_delete_confirm(callback: CallbackQuery):
+    acc_id = callback.data.split(":")[2]
+    acc = get_account(acc_id)
+    uname = f"@{acc['username']}" if acc and acc.get("username") else acc_id
+    await callback.message.edit_text(
+        f"⚠️ Удалить аккаунт {uname}?\n"
+        f"Сессия будет закрыта и удалена безвозвратно.",
+        reply_markup=confirm_menu(
+            yes_data=f"acc:delete:yes:{acc_id}",
+            no_data=f"acc:open:{acc_id}"
+        )
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("acc:delete:yes:"))
+async def account_delete_do(callback: CallbackQuery):
+    acc_id = callback.data.split(":")[3]
+    acc = get_account(acc_id)
+
+    if not acc:
+        await callback.answer("❌ Аккаунт не найден", show_alert=True)
+        return
+
+    # 1. Отключаем Telethon клиент (logout + disconnect)
+    await disconnect_account(acc_id, logout=True)
+
+    # 2. Удаляем файл сессии
+    session_file = acc.get("session_file", "")
+    if session_file and os.path.exists(session_file):
+        os.remove(session_file)
+        logger.info(f"Файл сессии удалён: {session_file}")
+
+    # 3. Удаляем из data.json
+    delete_account(acc_id)
+
+    accounts = list(get_accounts().values())
+    count = len(accounts)
+    await callback.message.edit_text(
+        f"✅ Аккаунт удалён.\n\n"
+        f"📱 Подключённые аккаунты ({count}):" if count else "✅ Аккаунт удалён.\n\n📭 Нет подключённых аккаунтов.",
+        reply_markup=accounts_menu(accounts)
+    )
+    await callback.answer("🗑️ Удалено")

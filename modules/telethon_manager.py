@@ -29,15 +29,21 @@ async def connect_account(acc_id: str, session_file: str) -> bool:
         return False
 
 
-async def disconnect_account(acc_id: str) -> None:
-    """Отключить клиент из памяти."""
+
+async def disconnect_account(acc_id: str, logout: bool = False) -> None:
     client = active_clients.pop(acc_id, None)
-    if client:
-        try:
+    if not client:
+        return
+    try:
+        if logout and client.is_connected():
+            await client.log_out()         # отзываем на сервере Telegram
+            logger.info(f"Аккаунт {acc_id} разлогинен.")
+        else:
             await client.disconnect()
             logger.info(f"Аккаунт {acc_id} отключён.")
-        except Exception as e:
-            logger.warning(f"Ошибка отключения {acc_id}: {e}")
+    except Exception as e:
+        logger.warning(f"Ошибка при отключении {acc_id}: {e}")
+
 
 
 async def connect_all_accounts() -> None:
@@ -56,8 +62,7 @@ async def connect_all_accounts() -> None:
 
 async def disconnect_all_accounts() -> None:
     for acc_id in list(active_clients.keys()):
-        await disconnect_account(acc_id)
-
+        await disconnect_account(acc_id, logout=False)
 
 def get_client(acc_id: str) -> TelegramClient | None:
     return active_clients.get(acc_id)
