@@ -12,6 +12,7 @@ from config import (
 )
 from keyboards import (
     account_detail,
+    main_menu,
     user_detail,
     roles_menu, role_detail,
     context_menu,
@@ -96,7 +97,7 @@ async def user_add_receive(message: Message, state: FSMContext):
 
     # Проверка: уже добавлен
     if get_user(acc_id, str(user_id)):
-        await message.answer(f"⚠️ Пользователь уже добавлен к этому аккаунту.")
+        await message.answer(f"⚠️ Пользователь уже добавлен к этому аккаунту.", reply_markup=main_menu())
         await state.clear()
         return
 
@@ -106,7 +107,7 @@ async def user_add_receive(message: Message, state: FSMContext):
     uname = f"@{username}" if username else name
     acc = get_account(acc_id)
     users = list(acc.get("users", {}).values())
-    await message.answer(f"✅ Пользователь {uname} добавлен!")
+    await message.answer(f"✅ Пользователь {uname} добавлен!", reply_markup=main_menu())
     await message.answer(
         _account_detail_text(acc),
         reply_markup=account_detail(acc, users)

@@ -8,6 +8,7 @@ from aiogram.filters import StateFilter
 from aiogram.types import Message, CallbackQuery
 from telethon import TelegramClient
 from telethon.errors import (
+    FloodWaitError,
     PhoneNumberInvalidError,
     PhoneCodeExpiredError,
     PhoneCodeInvalidError,
@@ -97,14 +98,14 @@ async def account_open(callback: CallbackQuery):
 @router.callback_query(F.data == "acc:add")
 async def account_add_start(callback: CallbackQuery, state: FSMContext):
     acc_id = str(uuid.uuid4())[:8] 
-    session_file = f"{SESSIONS_DIR}/{acc_id}.session"
-    client = TelegramClient(session_file, int(TG_API), TG_HASH)
+    temp_session = f"{SESSIONS_DIR}/_temp_{callback.from_user.id}.session"
+    client = TelegramClient(temp_session, int(TG_API), TG_HASH)
     await client.connect()
 
     await state.set_state(AddAccountFSM.waiting_phone)
     await state.update_data(
         acc_id=acc_id,
-        session_file=session_file,
+        temp_session=temp_session,
         client=client
     )
     await callback.message.answer(
@@ -130,10 +131,11 @@ async def process_phone(message: Message, state: FSMContext):
 
     data = await state.get_data()
     client: TelegramClient = data["client"]
-    session_file = data["session_file"]
+    temp_session = data["temp_session"]
 
     try:
         result = await client.send_code_request(phone)
+        logger.info(f"Код отправлен: type={result.type}, next_type={result.next_type}")
         await state.update_data(phone=phone, phone_code_hash=result.phone_code_hash)
         await state.set_state(AddAccountFSM.waiting_code)
         await message.answer(
@@ -145,9 +147,16 @@ async def process_phone(message: Message, state: FSMContext):
         await message.answer("❌ Неверный номер. Проверьте формат и повторите ввод.")
     except Exception as e:
         logger.error(f"send_code_request error: {e}")
-        await cleanup_session(client, session_file)
+        await cleanup_session(client, temp_session)
         await state.clear()
         await message.answer(f"❌ Ошибка: {e}")
+    except FloodWaitError as e:
+        await cleanup_session(client, temp_session)
+        await state.clear()
+        await message.answer(
+            f"⏳ Слишком много попыток. Telegram заблокировал запросы.\n"
+            f"Подождите {e.seconds} секунд и попробуйте снова."
+        )
 
 
 # ── Ввод кода ─────────────────────────────────────────────────
@@ -163,27 +172,13 @@ async def process_code(message: Message, state: FSMContext):
     client: TelegramClient = data["client"]
     phone = data["phone"]
     phone_code_hash = data["phone_code_hash"]
-    session_file = data["session_file"]
+    temp_session = data["temp_session"]
 
     try:
-        await client.sign_in(
-            phone=phone,
-            code=code,
-            phone_code_hash=phone_code_hash
-        )
-        # Успех без 2FA
-        me = await client.get_me()
-        username = me.username or str(me.id)
-        create_account(me.id, username)
-        await client.disconnect()
-        await state.clear()
-        accounts = list(get_accounts().values())
-        await message.answer(
-            f"✅ Аккаунт @{username} подключён!",
-            reply_markup=accounts_menu(accounts)
-        )
+        await client.sign_in(phone=phone, code=code, phone_code_hash=phone_code_hash)
+        await _finalize(message, state, client, temp_session)
+
     except SessionPasswordNeededError:
-        # Требуется 2FA
         await state.set_state(AddAccountFSM.waiting_password)
         await message.answer(
             "🔐 Аккаунт защищён двухфакторной аутентификацией.\n"
@@ -192,24 +187,21 @@ async def process_code(message: Message, state: FSMContext):
     except PhoneCodeInvalidError:
         await message.answer("❌ Неверный код. Попробуйте ещё раз.")
     except PhoneCodeExpiredError:
-        # Код истёк — запрашиваем новый автоматически
         try:
             new_result = await client.send_code_request(phone)
             await state.update_data(phone_code_hash=new_result.phone_code_hash)
             await message.answer(
-                "⏰ Предыдущий код истёк. Отправлен новый код.\n"
-                "Введите его сюда:\n"
+                "⏰ Предыдущий код истёк. Отправлен новый.\n"
+                "Введите его:\n"
                 "Или /cancel для отмены."
             )
-            # Остаёмся в состоянии waiting_code
         except Exception as e:
-            logger.error(f"Ошибка при повторной отправке кода: {e}")
-            await cleanup_session(client, session_file)
+            await cleanup_session(client, temp_session)
             await state.clear()
             await message.answer(f"❌ Не удалось отправить новый код: {e}")
     except Exception as e:
         logger.error(f"sign_in error: {e}")
-        await cleanup_session(client, session_file)
+        await cleanup_session(client, temp_session)
         await state.clear()
         await message.answer(f"❌ Ошибка авторизации: {e}")
 
@@ -217,28 +209,18 @@ async def process_code(message: Message, state: FSMContext):
 
 @router.message(AddAccountFSM.waiting_password)
 async def process_password(message: Message, state: FSMContext):
-    password = message.text.strip()
     data = await state.get_data()
     client: TelegramClient = data["client"]
-    session_file = data["session_file"]
+    temp_session = data["temp_session"]
 
     try:
-        await client.sign_in(password=password)
-        me = await client.get_me()
-        username = me.username or str(me.id)
-        create_account(me.id, username)
-        await client.disconnect()
-        await state.clear()
-        accounts = list(get_accounts().values())
-        await message.answer(
-            f"✅ Аккаунт @{username} подключён с 2FA!",
-            reply_markup=accounts_menu(accounts)
-        )
+        await client.sign_in(password=message.text.strip())
+        await _finalize(message, state, client, temp_session)
     except PasswordHashInvalidError:
         await message.answer("❌ Неверный пароль 2FA. Попробуйте ещё раз.")
     except Exception as e:
         logger.error(f"2FA sign_in error: {e}")
-        await cleanup_session(client, session_file)
+        await cleanup_session(client, temp_session)
         await state.clear()
         await message.answer(f"❌ Ошибка: {e}")
 
@@ -256,9 +238,9 @@ async def process_password(message: Message, state: FSMContext):
 async def account_add_cancel(message: Message, state: FSMContext):
     data = await state.get_data()
     client: TelegramClient = data.get("client")
-    session_file = data.get("session_file")
+    temp_session = data.get("temp_session")
     if client:
-        await cleanup_session(client, session_file)
+        await cleanup_session(client, temp_session)
     await state.clear()
     accounts = list(get_accounts().values())
     await message.answer(
@@ -314,3 +296,39 @@ async def account_delete_do(callback: CallbackQuery):
         reply_markup=accounts_menu(accounts)
     )
     await callback.answer("🗑️ Удалено")
+
+
+# ── Финализация — общая для кода и 2FA ────────────────────────
+
+async def _finalize(message: Message, state: FSMContext, client: TelegramClient, temp_session: str):
+    me = await client.get_me()
+    real_id  = str(me.id)
+    username = me.username or real_id
+    real_session = f"{SESSIONS_DIR}/{real_id}.session"
+
+    await client.disconnect()
+
+    # Переименовываем временный файл сессии в реальный id
+    if os.path.exists(temp_session):
+        os.rename(temp_session, real_session)
+        logger.info(f"Сессия переименована: {temp_session} → {real_session}")
+
+    # Проверка: аккаунт уже подключён
+    if get_account(real_id):
+        await state.clear()
+        accounts = list(get_accounts().values())
+        await message.answer(
+            f"⚠️ Аккаунт @{username} уже подключён.",
+            reply_markup=accounts_menu(accounts)
+        )
+        return
+
+    # Сохраняем с реальным Telegram id
+    create_account(real_id, username)
+    await state.clear()
+
+    accounts = list(get_accounts().values())
+    await message.answer(
+        f"✅ Аккаунт @{username} подключён!",
+        reply_markup=accounts_menu(accounts)
+    )

@@ -273,20 +273,23 @@ def context_menu(acc_id: str, user_id: int, active_ctx: str) -> InlineKeyboardMa
 # ══════════════════════════════════════════════════════════════
 
 def request_user_keyboard() -> ReplyKeyboardMarkup:
-    builder = ReplyKeyboardBuilder()
-    builder.row(KeyboardButton(
-        text="👤 Выбрать пользователя",
-        request_users=KeyboardButtonRequestUsers(
-            request_id=1,
-            user_is_bot=False,
-            max_quantity=1,
-            request_name=True,
-            request_username=True,
-        )
-    ))
-    builder.row(KeyboardButton(text="❌ Отмена"))
-    return builder.as_markup(resize_keyboard=True, one_time_keyboard=True)
-
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(
+                text="👤 Выбрать пользователя",
+                request_users=KeyboardButtonRequestUsers(
+                    request_id=1,
+                    user_is_bot=False,
+                    max_quantity=1,
+                    request_name=True,
+                    request_username=True,
+                )
+            )],
+            [KeyboardButton(text="❌ Отмена")]
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
 
 def cancel_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[

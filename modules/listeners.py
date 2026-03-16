@@ -8,27 +8,23 @@ from modules.openrouter import ask
 
 logger = logging.getLogger(__name__)
 
-# ── Буфер входящих сообщений и дебаунс-задачи ────────────────
-# Ключ: (acc_id, user_tg_id)
 _pending_messages: dict[tuple, list[str]] = {}
 _pending_tasks:    dict[tuple, asyncio.Task] = {}
 
-DEBOUNCE_SECONDS = 4    # ждём паузу после последнего сообщения
-TYPING_WAIT      = 8    # максимум ждём печатание
+# Храним время последнего typing-события: { (acc_id, sender_id): timestamp }
+_last_typing:      dict[tuple, float] = {}
 
+DEBOUNCE_SECONDS = 3    # пауза после последнего сообщения
+TYPING_TIMEOUT   = 7    # максимум ждём печатание
+TYPING_GRACE     = 1.5  # считаем "всё ещё печатает" если typing был < N сек назад
 
-# ══════════════════════════════════════════════════════════════
-#  РЕГИСТРАЦИЯ ХЕНДЛЕРОВ НА КЛИЕНТ
-# ══════════════════════════════════════════════════════════════
 
 def register_listener(client: TelegramClient, acc_id: str) -> None:
-    """Вызывается из telethon_manager после успешного connect_account."""
 
+    # ── Слушаем новые сообщения ───────────────────────────────
     @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
     async def on_message(event):
         data = load_data()
-
-        # Глобальный рубильник
         if not data.get("bot_enabled", True):
             return
 
@@ -38,8 +34,6 @@ def register_listener(client: TelegramClient, acc_id: str) -> None:
 
         sender_id = str(event.sender_id)
         user = get_user(acc_id, sender_id)
-
-        # Пользователь не добавлен или выключен
         if not user or not user.get("active", False):
             return
 
@@ -48,17 +42,30 @@ def register_listener(client: TelegramClient, acc_id: str) -> None:
             return
 
         key = (acc_id, sender_id)
-
-        # Добавляем сообщение в буфер
         _pending_messages.setdefault(key, []).append(text)
 
-        # Сбрасываем таймер дебаунса
+        # Сбрасываем дебаунс-таймер
         if key in _pending_tasks:
             _pending_tasks[key].cancel()
 
         _pending_tasks[key] = asyncio.create_task(
             _debounce_and_reply(client, acc_id, sender_id, event.sender_id, user)
         )
+
+    # ── Слушаем typing-события ────────────────────────────────
+    @client.on(events.UserUpdate())
+    async def on_user_update(event):
+        # typing=True означает что пользователь печатает прямо сейчас
+        if not event.typing:
+            return
+
+        sender_id = str(event.user_id)
+        key = (acc_id, sender_id)
+
+        # Обновляем метку времени только если этот пользователь у нас в очереди
+        if key in _pending_tasks:
+            _last_typing[key] = asyncio.get_event_loop().time()
+            logger.debug(f"[{acc_id}] Пользователь {sender_id} печатает...")
 
 
 async def _debounce_and_reply(
@@ -70,71 +77,49 @@ async def _debounce_and_reply(
 ) -> None:
     key = (acc_id, sender_id)
 
-    # Шаг 1: ждём паузу в сообщениях
+    # Шаг 1: базовая пауза после последнего сообщения
     await asyncio.sleep(DEBOUNCE_SECONDS)
 
-    # Шаг 2: проверяем не печатает ли пользователь
-    typing_deadline = asyncio.get_event_loop().time() + TYPING_WAIT
-    while asyncio.get_event_loop().time() < typing_deadline:
-        if await _is_typing(client, sender_tg_id):
-            await asyncio.sleep(2)
+    # Шаг 2: ждём пока пользователь не перестанет печатать
+    deadline = asyncio.get_event_loop().time() + TYPING_TIMEOUT
+    while asyncio.get_event_loop().time() < deadline:
+        last = _last_typing.get(key, 0)
+        since_typing = asyncio.get_event_loop().time() - last
+        if since_typing < TYPING_GRACE:
+            # Недавно было typing-событие — ждём ещё
+            await asyncio.sleep(1)
         else:
+            # Давно не печатал — можно отвечать
             break
 
-    # Шаг 3: собираем накопленные сообщения
+    # Чистим метку typing
+    _last_typing.pop(key, None)
+
+    # Шаг 3: собираем буфер
     buffered = _pending_messages.pop(key, [])
     _pending_tasks.pop(key, None)
-
     if not buffered:
         return
 
-    # Объединяем несколько коротких сообщений в одно
     combined_input = "\n".join(buffered)
 
-    # Шаг 4: собираем контекст из истории
+    # Шаг 4: контекст
     context_size = int(user.get("context", "10"))
     messages = await _build_context(client, sender_tg_id, context_size, combined_input)
 
-    # Шаг 5: получаем системный промпт роли
+    # Шаг 5: роль
     system_prompt, temp_key = _get_role(user.get("role"))
 
-    # Шаг 6: запрос к OpenRouter
+    # Шаг 6: запрос
     logger.info(f"[{acc_id}] Запрос к OpenRouter для user {sender_id}")
     response = await ask(system_prompt=system_prompt, messages=messages, temperature_key=temp_key)
-
     if not response:
         logger.warning(f"[{acc_id}] Пустой ответ от OpenRouter")
         return
 
-    # Шаг 7: отправляем ответ с пометкой
-    final_text = f"{response}\n\n@bot"
-    await client.send_message(sender_tg_id, final_text)
+    # Шаг 7: отправка
+    await client.send_message(sender_tg_id, f"{response}\n\n@bot")
     logger.info(f"[{acc_id}] Ответ отправлен → {sender_id}")
-
-
-# ══════════════════════════════════════════════════════════════
-#  ВСПОМОГАТЕЛЬНЫЕ
-# ══════════════════════════════════════════════════════════════
-
-async def _is_typing(client: TelegramClient, user_tg_id: int) -> bool:
-    """Проверяем статус печатания через UserUpdate."""
-    try:
-        async with client.action(user_tg_id, "cancel"):
-            pass
-        # Запрашиваем последние действия пользователя
-        result = await client(
-            __import__("telethon.tl.functions.users", fromlist=["GetFullUserRequest"])
-            .GetFullUserRequest(user_tg_id)
-        )
-        # Telethon не предоставляет прямой флаг "печатает"
-        # Используем статус online как косвенный признак активности
-        status = result.users[0].status if result.users else None
-        if status is None:
-            return False
-        from telethon.tl.types import UserStatusOnline
-        return isinstance(status, UserStatusOnline)
-    except Exception:
-        return False
 
 
 async def _build_context(
