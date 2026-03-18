@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  medeepseek-bot:
+    build: .
+    container_name: medeepseek_bot
+    restart: unless-stopped
+    network_mode: "host"
+    env_file:
+      - .env
+    volumes:
+      # Пробрасываем папку с сессиями Telethon, чтобы не авторизовываться заново
+      - ./sessions:/app/sessions
+      # Пробрасываем data.json, если бот в него что-то записывает
+      - ./data.json:/app/data.json

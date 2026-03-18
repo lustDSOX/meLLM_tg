@@ -8,9 +8,11 @@ from config import BOT_TOKEN, ADMIN_ID
 from handlers import accounts, roles, status, users
 from keyboards import main_menu
 from modules.telethon_manager import connect_all_accounts, disconnect_all_accounts
+from aiogram.client.session.aiohttp import AiohttpSession
 
 logging.basicConfig(level=logging.INFO)
-bot = Bot(token=BOT_TOKEN)
+session = AiohttpSession(proxy="socks5://127.0.0.1:1080")
+bot = Bot(token=BOT_TOKEN, session=session)
 
 class AdminMiddleware(BaseMiddleware):
     """Middleware для роутеров: проверка админа перед хендлерами."""

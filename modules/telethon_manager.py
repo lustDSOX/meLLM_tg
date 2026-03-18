@@ -3,6 +3,7 @@ import os
 from telethon import TelegramClient
 from config import TG_API, TG_HASH, get_accounts, update_account
 from modules.listeners import register_listener
+import socks
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +15,12 @@ async def connect_account(acc_id: str, session_file: str) -> bool:
         logger.warning(f"Сессия не найдена: {session_file}")
         return False
     try:
-        client = TelegramClient(session_file, int(TG_API), TG_HASH)
+        client = TelegramClient(
+            session_file,
+            int(TG_API),
+            TG_HASH,
+            proxy=(socks.SOCKS5, '127.0.0.1', 1080),
+            )
         await client.connect()
         if not await client.is_user_authorized():
             logger.warning(f"Аккаунт {acc_id} не авторизован.")

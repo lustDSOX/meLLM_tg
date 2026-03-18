@@ -2,6 +2,7 @@ import aiohttp
 import logging
 from config import API_TOKEN, API_MODEL, FREQUENCY_PENALTY, MAX_TOKENS, PRESENCE_PENALTY
 from keyboards import TEMPERATURE_LEVELS
+from aiohttp_socks import ProxyConnector
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,8 @@ async def ask(system_prompt: str, messages: list[dict], temperature_key: str = "
     }
 
     try:
-        async with aiohttp.ClientSession() as session:
+        connector = ProxyConnector.from_url("socks5://127.0.0.1:1080")
+        async with aiohttp.ClientSession(connector=connector) as session:
             async with session.post(OPENROUTER_URL, json=payload, headers=headers) as resp:
                 if resp.status != 200:
                     text = await resp.text()
